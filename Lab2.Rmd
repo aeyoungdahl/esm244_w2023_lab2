@@ -1,0 +1,193 @@
+---
+title: "Lab2"
+author: "Anne Youngdahl"
+date: "2023-01-19"
+output: html_document
+---
+
+```{r setup, echo = TRUE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(palmerpenguins)
+library(AICcmodavg) ### probably have to install this one
+library(equatiomatic)
+```
+
+
+# Predicting penguin mass
+```{r}
+#penguins data is already in the palmer penguins package - see in global environment 
+
+
+#clean the data
+penguins_clean <- penguins %>% 
+  drop_na() %>%                         # drop any NA values in data
+  rename(mass = body_mass_g,            # shorter column names to make it easier to type
+         bill_l = bill_length_mm, 
+         bill_d = bill_depth_mm, 
+         flip_l = flipper_length_mm)
+
+# create a model
+mdl1 <- lm(mass ~ bill_l + bill_d + flip_l + species + sex + island, 
+                  data = penguins_clean)
+summary(mdl1) # inspect output statistics
+# can also check one at a time, e.g. : AIC(mdl1)
+
+#write a formula
+
+f1 <- mass ~ bill_l + bill_d + flip_l + species + sex + island
+
+mdl1 <- lm(f1, data=penguins_clean)
+
+f2 <-  mass ~ bill_l + bill_d + flip_l + species + sex
+
+mdl2 <- lm(f2, data = penguins_clean)
+
+#check stats on first two models
+AIC(mdl1, mdl2)
+
+f3 <- mass ~ bill_d + flip_l + species + sex
+mdl3 <- lm(f3, data = penguins_clean)
+
+AIC(mdl1, mdl2, mdl3)
+#lowest AIC is the best. In this case, mdl2 is the best one because even though it has more df than mdl3, it has the lowest AIC value.
+
+#can try BIC as well.
+BIC(mdl1, mdl2, mdl3)
+
+#remember, BIC rewards parsimony more strongly.
+#we can use the metrics AIC and BIC to compare models. 
+
+
+AICcmodavg::AICc(mdl1) # this gives you AIC-corrected. We put the package name first
+
+aictab(list(mdl1, mdl2, mdl3))
+bictab(list(mdl1, mdl2, mdl3))
+
+
+
+```
+
+# Compare models using k-fold cross validation
+
+```{r}
+#we'll use ten folds. This means that we break our data up into ten subsets, each containing ten percent of the data. We run our model with each ten-percent-subset, and then see how well it predicts the other nine subsets.
+
+folds <- 10
+
+#create a vector
+fold_vec <- rep(1:folds, length.out = nrow(penguins_clean))
+fold_vec
+
+#need to make sure penguins are assigned to different bins RANDOMLY.
+#note: computers don't use truly random numbers, they use pseudo-random numbers. So, when we use the same set_seed(), we'll get the same random list. (In this case, 42 is arbitrary. See "Hitchiker's Guide to the Galaxy.")
+set.seed(42)
+
+penguins_fold <- penguins_clean %>% 
+  mutate(group = sample(fold_vec, size = n(), replace = FALSE))
+
+table(penguins_fold$group)
+
+#create a test data frame - take out the first subset and set it aside.
+test_df <- penguins_fold %>% 
+  filter(group == 1)
+train_df <- penguins_fold %>% 
+  filter(group != 1)
+
+```
+### write a function
+```{r}
+# write a function with two inputs (a vector of predictions, and a vector of actual values -- x and y)
+calc_rmse <- function(x, y) {
+  rmse <- (x-y)^2 %>% 
+  mean() %>% 
+  sqrt()
+return(rmse)
+}
+
+```
+
+### training models
+```{r}
+#train the models
+
+training_mdl1 <- lm(f1, data = train_df)
+
+training_mdl2 <- lm(f2, data = train_df)
+
+training_mdl3 <- lm(f3, train_df)
+
+
+# output predictions
+### WHAT DOES THIS DO???????????????????????
+predict_test <- test_df %>% 
+  mutate(mdl1 = predict(training_mdl1, test_df), 
+         mdl2 = predict(training_mdl2, test_df),
+         mdl3 = predict(training_mdl3, test_df))
+predict_test
+
+rmse_predict_test <- predict_test %>% 
+  summarize(rmse_mdl1 = calc_rmse(mdl1, mass),
+            rmse_mdl2 = calc_rmse(mdl2, mass), 
+            rmse_mdl3 = calc_rmse(mdl3, mass))
+
+#rmse = root mean square error. Find the error, square it, take the mean, and then take the (square) root.
+
+```
+
+
+
+# Let's iterate!
+intro to "for" loops.
+
+```{r}
+rmse_df <- data.frame()
+
+for(i in 1:folds) {
+  kfold_test_df <- penguins_fold %>% 
+    filter(group == i)
+  kfold_train_df <- penguins_fold %>% 
+    filter(group != i)
+  
+  kfold_mdl1 <- lm(f1, data = kfold_train_df)
+  kfold_mdl2 <- lm(f2, data = kfold_train_df)
+  kfold_mdl3 <- lm(f3, data = kfold_train_df)
+  
+  kfold_pred_df <- kfold_test_df %>% 
+    mutate(mdl1 = predict(kfold_mdl1, kfold_test_df),
+           mdl2 = predict(kfold_mdl2, .),
+           mdl3 = predict(kfold_mdl3, .))
+  
+  kfold_rmse_df <- kfold_pred_df %>% 
+    summarize(rmse_mdl1 = calc_rmse(mdl1, mass),
+              rmse_mdl2 = calc_rmse(mdl2, mass), 
+              rmse_mdl3 = calc_rmse(mdl3, mass),
+              test_gp = i)
+  
+  rmse_df <- bind_rows(rmse_df, kfold_rmse_df)
+}
+
+# for each model, take the average of all ten folds results.
+# view these averages. Use them to pick a model.
+rmse_df %>%  
+  summarize(mean_rmse_mdl1 = mean(rmse_mdl1),
+            mean_rmse_mdl2 = mean(rmse_mdl2),
+            mean_rmse_mdl3 = mean(rmse_mdl3))
+
+```
+
+
+
+# Finalize the model
+In all of the cases, Model2 seemed to be the preferred model.
+```{r}
+final_mdl <- lm(f2, data=penguins_clean)
+
+```
+  Our final model:
+  `r equatiomatic::extract_eq(final_mdl, wrap = TRUE)`
+  
+  And with coefficients:
+  `r equatiomatic::extract_eq(final_mdl, wrap = TRUE, use_coefs = TRUE)`
+
